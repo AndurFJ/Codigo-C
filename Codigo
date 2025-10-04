@@ -1,0 +1,170 @@
+/* LEDs_PIC16F877A.c
+ * Compilador: XC8 (MPLAB X)
+ * Micro: PIC16F877A
+ * Autor: convertido desde ASM por Asistente
+ *
+ * Descripción: Control de 12 LEDs con dos modos:
+ *   - Modo BARRIDO: posiciones 0..11 (RB0..RB7, RA0..RA3)
+ *   - Modo LUCES NAVIDEÑAS: 3 estados cíclicos (0,1,2)
+ *
+ * NOTAS:
+ *  - Ajusta _XTAL_FREQ según tu cristal (ej: 20000000UL para 20MHz).
+ *  - Ajusta BARRIDO_DELAY_MS y NAV_DELAY_MS para velocidades deseadas.
+ */
+
+#include <xc.h>
+#include <stdint.h>
+
+/* ---------- Config bits (XC8 pragma) ---------- */
+#pragma config FOSC = HS      // Oscillator Selection bits (HS oscillator)
+#pragma config WDTE = OFF     // Watchdog Timer Enable bit (WDT disabled)
+#pragma config PWRTE = ON     // Power-up Timer Enable bit (WDT disabled)
+#pragma config BOREN = ON     // Brown-out Reset Enable bit (BOR enabled)
+#pragma config LVP = OFF      // Low-Voltage Programming (disabled)
+#pragma config CPD = OFF      // Data EEPROM Memory Code Protection (off)
+#pragma config WRT = OFF      // Flash Program Memory Write Enable (off)
+#pragma config CP = OFF       // Flash Program Memory Code Protection (off)
+
+/* ---------- User constants ---------- */
+#define _XTAL_FREQ 20000000UL   // Cambia al valor real de tu cristal (ej. 4MHz, 8MHz, 20MHz)
+#define BARRIDO_DELAY_MS 300    // Delay entre posiciones en modo barrido (ms) - ajustable
+#define NAV_DELAY_MS     500    // Delay entre estados navideños (ms) - ajustable
+
+/* ---------- Variables globales ---------- */
+volatile uint8_t led_position = 0;  // 0..11
+volatile uint8_t direction = 0;     // bit0: 0 = adelante, 1 = atrás
+volatile uint8_t nav_state = 0;     // 0..2
+
+/* ---------- Prototipos ---------- */
+void setup(void);
+void modo_barrido(void);
+void modo_navidad(void);
+
+/* ---------- Código principal ---------- */
+void main(void)
+{
+    setup();
+
+    while (1)
+    {
+        /* Leer RA4: si RA4==1 -> modo LUCES NAVIDEÑAS, si RA4==0 -> BARRIDO */
+        if (PORTAbits.RA4 == 1)
+        {
+            modo_navidad();
+        }
+        else
+        {
+            modo_barrido();
+        }
+    }
+}
+
+/* ---------- Inicialización hardware ---------- */
+void setup(void)
+{
+    /* Configurar TRIS */
+    TRISB = 0x00;      // PORTB como salida (RB0..RB7)
+    TRISA = 0xF0;      // RA0..RA3 salidas (bits 0..3), RA4..RA7 entradas (bits 4..7)
+
+    /* Desactivar ADC y comparadores para usar pines como digitales */
+    ADCON1 = 0x07;     // Configurar AN pins como digitales (ADCON1 = 0x07)
+    CMCON  = 0x07;     // Deshabilitar comparadores
+
+    /* Opcional: configurar pull-ups internos (nota: pull-ups son para PORTB)
+       En PIC16F877A la bandera es RBPU en OPTION_REG (0 = habilita pull-ups) */
+    OPTION_REGbits.nRBPU = 0;   // Habilita pull-ups de PORTB (si los necesitas)
+
+    /* Limpiar puertos */
+    PORTA = 0x00;
+    PORTB = 0x00;
+
+    /* Inicializar variables */
+    led_position = 0;
+    direction = 0;
+    nav_state = 0;
+}
+
+/* ---------- Modo barrido (0..11) ---------- */
+void modo_barrido(void)
+{
+    /* Apagar todos los LEDs (PORTB y RA0..RA3) */
+    PORTB = 0x00;
+    /* Mantener RA4..RA7 intactos al manipular RA0..RA3:
+       leemos PORTA, limpiamos los 4 LSB y escribimos */
+    uint8_t porta = PORTA & 0xF0;
+    PORTA = porta;
+
+    /* Seleccionar LED según led_position (0..11) */
+    if (led_position <= 7)
+    {
+        /* RB0..RB7 */
+        PORTB = (uint8_t)(1u << led_position);
+    }
+    else
+    {
+        /* led_position 8..11 -> RA0..RA3 */
+        uint8_t ra_bits = (uint8_t)(1u << (led_position - 8)); // bit 0..3
+        PORTA = (PORTA & 0xF0) | (ra_bits & 0x0F);
+    }
+
+    /* Delay (ajustable) */
+    __delay_ms(BARRIDO_DELAY_MS);
+
+    /* Actualizar led_position según direction */
+    if ((direction & 0x01) == 0)  /* adelante */
+    {
+        led_position++;
+        if (led_position > 11)
+        {
+            led_position = 11;
+            direction |= 0x01; /* cambiar dirección a atrás */
+        }
+    }
+    else /* atrás */
+    {
+        if (led_position == 0)
+        {
+            led_position = 0;
+            direction &= ~0x01; /* cambiar dirección a delante */
+        }
+        else
+        {
+            led_position--;
+        }
+    }
+}
+
+/* ---------- Modo luces navideñas (3 patrones cíclicos) ---------- */
+void modo_navidad(void)
+{
+    switch (nav_state)
+    {
+        case 0:
+            /* Patrón 0: alternado 0x55 en PORTB + RA0 y RA2 */
+            PORTB = 0x55;
+            PORTA = (PORTA & 0xF0) | 0x05; /* RA0 y RA2 = 1 */
+            nav_state = 1;
+            break;
+
+        case 1:
+            /* Patrón 1: alternado 0xAA en PORTB + RA1 y RA3 */
+            PORTB = 0xAA;
+            PORTA = (PORTA & 0xF0) | 0x0A; /* RA1 y RA3 = 1 */
+            nav_state = 2;
+            break;
+
+        case 2:
+            /* Patrón 2: todo brillante (0xFF) + RA0..RA3 */
+            PORTB = 0xFF;
+            PORTA = (PORTA & 0xF0) | 0x0F; /* RA0..RA3 = 1 */
+            nav_state = 0;
+            break;
+
+        default:
+            nav_state = 0;
+            break;
+    }
+
+    /* Delay para efecto navideño */
+    __delay_ms(NAV_DELAY_MS);
+}
